@@ -18,9 +18,9 @@ from sagan_models import Generator, Discriminator
 # from resnet_models import Generator, Discriminator
 from utils import *
 
+
 #import os #required for windows!
 #os.environ["KMP_DUPLICATE_LIB_OK"] = "True"
-
 
 
 class Trainer(object):
@@ -44,7 +44,7 @@ class Trainer(object):
         self.total_step = config.total_step
         self.d_iters = config.d_iters
 
-        #batch related instances: batch size, at which steps to double batch size
+        # batch related instances: batch size, at which steps to double batch size
         self.batch_size = config.batch_size
         self.batch_s_doubler = config.batch_s_doubler
         self.batch_multiplier = 1
@@ -55,8 +55,8 @@ class Trainer(object):
                 self.batch_s_doubler.append(self.total_step + 1)
                 self.batch_s_doubler = iter(self.batch_s_doubler)
                 self.steps_before_double = next(self.batch_s_doubler)
-                #I know there are way nicer ways of doing this but I'm a little tired. What this does is that it effectively doubles the batch size when a certain provided number of steps has been reached. Happy batching.
-                #This allows for a delay when optim.step() is called, treating D and G the same here
+                # I know there are way nicer ways of doing this but I'm a little tired. What this does is that it effectively doubles the batch size when a certain provided number of steps has been reached. Happy batching.
+                # This allows for a delay when optim.step() is called, treating D and G the same here
 
         self.num_workers = config.num_workers
         self.g_lr = config.g_lr
@@ -73,10 +73,11 @@ class Trainer(object):
         self.log_step = config.log_step
         self.sample_step = config.sample_step
         self.model_save_step = config.model_save_step
-        self.eval_step = config.eval_step #<------ how often to evaluate FID
+        self.eval_step = config.eval_step  # <------ how often to evaluate FID
         self.version = config.version
         self.backup_freq = config.backup_freq
         self.bup_path = config.bup_path
+        self.batches_seen = 0
 
         # Path
         self.optim = config.optim
@@ -85,7 +86,7 @@ class Trainer(object):
         self.avg_start = config.avg_start
         self.stats_dir = config.stats_dir
         self.fid_cache = self.stats_dir + '/cifar10.train.npz'
-        self.build_model() #Important command, this actually builds the model!
+        self.build_model()  # Important command, this actually builds the model!
 
         if self.svrg:
             self.mu_g = []
@@ -109,25 +110,26 @@ class Trainer(object):
         self.meta_logger = setup_logger(self.log_path, file_name='meta_logger.log')
 
     def train(self):
-        self.data_gen = self._data_gen() #returns the iterator for the dataset (Tensor, Batch of 64, 3 channels, 32 h, 32 w)
+        self.data_gen = self._data_gen()  # returns the iterator for the dataset (Tensor, Batch of 64, 3 channels, 32 h, 32 w)
 
-        fixed_z = tensor2var(torch.randn(self.batch_size, self.z_dim)) #generated random input vector (tensor) for the generator
+        fixed_z = tensor2var(
+            torch.randn(self.batch_size, self.z_dim))  # generated random input vector (tensor) for the generator
 
         if self.cont:
-            start = self.load_backup() #For the restarted method, save model, reload params
+            start = self.load_backup()  # For the restarted method, save model, reload params
         else:
             start = 0
 
         start_time = time.time()
         if self.svrg:
-            self.update_svrg_stats() #SVRG stats updating, see method
+            self.update_svrg_stats()  # SVRG stats updating, see method
         for step in range(start, self.total_step):
 
             if (step == self.steps_before_double):
                 self.batch_multiplier = self.batch_multiplier * 2
                 self.steps_before_double = next(self.batch_s_doubler)
-                self.batch_counter = self.batch_multiplier #This means you have 1 more small batch when starting
-                #so alternatively, set self.batch_counter = self.batch_multiplier -1 since we are counting backwards
+                self.batch_counter = self.batch_multiplier  # This means you have 1 more small batch when starting
+                # so alternatively, set self.batch_counter = self.batch_multiplier -1 since we are counting backwards
             for b in range(self.batch_multiplier):
                 # =================== SVRG =================== #
                 if self.svrg and self.svrg_freq_sampler.sample() == 1:
@@ -150,63 +152,74 @@ class Trainer(object):
                 self.batch_counter = self.batch_counter - 1
                 if self.batch_counter == 0: self.batch_counter = self.batch_multiplier
 
-                # --- storing stuff ---
-                if (step + 1) % self.log_step == 0:
-                    elapsed = time.time() - start_time
-                    elapsed = str(datetime.timedelta(seconds=elapsed))
-                    time_so_far = "Elapsed [{}], Step [{}/{}]".format(elapsed, step + 1, self.total_step)
-                    print(time_so_far)
+            # --- storing stuff ---
+            if int((step + 1) % (self.log_step / self.batch_multiplier)) == 0:
+                elapsed = time.time() - start_time
+                elapsed = str(datetime.timedelta(seconds=elapsed))
+                time_so_far = "Elapsed [{}], Step [{}/{}]".format(elapsed, step + 1, self.total_step)
+                print(time_so_far)
+                print('batches seen: ' + str(self.batches_seen))
 
-                if (step + 1) % self.sample_step == 0:
-                    save_image(denorm(self.G(fixed_z)[0].data),
-                               os.path.join(self.sample_path, 'gen', 'iter%08d.png' % step))
-                    save_image(denorm(self.G_avg(fixed_z)[0].data),
-                               os.path.join(self.sample_path, 'gen_avg', 'iter%08d.png' % step))
-                    save_image(denorm(self.G_ema(fixed_z)[0].data),
-                               os.path.join(self.sample_path, 'gen_ema', 'iter%08d.png' % step))
-                    #save_image(denorm(tensor2var(next(self.data_gen))),
-                    #           os.path.join(self.sample_path, 'real', 'iter%08d.png' % step)) #for saving real data
-                    meta_string = "Step %s/%s G_LR: %6.3f, D_LR: %6.3f, B_size: %4f, G_loss: %2.6f, D_loss: %2.6f" % (step, self.total_step, self.g_optimizer.param_groups[0]['lr'], self.d_optimizer.param_groups[0]['lr'], self.batch_size * self.batch_multiplier, self.g_loss_info, self.d_loss_info)
-                    self.meta_logger.info(meta_string)
+            if int((step + 1) % (self.sample_step / self.batch_multiplier)) == 0:
+                save_image(denorm(self.G(fixed_z)[0].data),
+                           os.path.join(self.sample_path, 'gen', 'iter%08d.png' % step))
+                save_image(denorm(self.G_avg(fixed_z)[0].data),
+                           os.path.join(self.sample_path, 'gen_avg', 'iter%08d.png' % step))
+                save_image(denorm(self.G_ema(fixed_z)[0].data),
+                           os.path.join(self.sample_path, 'gen_ema', 'iter%08d.png' % step))
+                # save_image(denorm(tensor2var(next(self.data_gen))),
+                #           os.path.join(self.sample_path, 'real', 'iter%08d.png' % step)) #for saving real data
+                meta_string = "Step %s/%s G_LR: %6.3f, D_LR: %6.3f, B_size: %4f, G_loss: %2.6f, D_loss: %2.6f" % (
+                step, self.total_step, self.g_optimizer.param_groups[0]['lr'], self.d_optimizer.param_groups[0]['lr'],
+                self.batch_size * self.batch_multiplier, self.g_loss_info, self.d_loss_info)
+                self.meta_logger.info(meta_string)
 
-                if self.model_save_step > 0 and (step+1) % self.model_save_step == 0:
-                    torch.save(self.G.state_dict(),
-                               os.path.join(self.model_save_path, 'gen', 'iter%08d.pth' % step))
-                    torch.save(self.G_avg.state_dict(),
-                               os.path.join(self.model_save_path, 'gen_avg', 'iter%08d.pth' % step))
-                    torch.save(self.G_ema.state_dict(),
-                               os.path.join(self.model_save_path, 'gen_ema', 'iter%08d.pth' % step))
+            if self.model_save_step > 0 and int((step + 1) % (self.model_save_step / self.batch_multiplier)) == 0:
+                torch.save(self.G.state_dict(),
+                           os.path.join(self.model_save_path, 'gen', 'iter%08d.pth' % step))
+                torch.save(self.G_avg.state_dict(),
+                           os.path.join(self.model_save_path, 'gen_avg', 'iter%08d.pth' % step))
+                torch.save(self.G_ema.state_dict(),
+                           os.path.join(self.model_save_path, 'gen_ema', 'iter%08d.pth' % step))
 
-                if self.backup_freq > 0 and (step+1) % self.backup_freq == 0:
-                    self.backup(step)
+            # --- FID / IS calculations + storage ---
+            if self.eval_step == 1 or int((step + 1) % (self.eval_step / self.batch_multiplier)) == 0:
+                elapsed = time.time() - start_time
+                elapsed = str(datetime.timedelta(seconds=elapsed))
+                time_fid_start = "FID START: Elapsed [{}], Step [{}/{}]".format(elapsed, step + 1, self.total_step)
 
-                # --- FID / IS calculations + storage ---
-                if self.eval_step == 1 or (step+1) % self.eval_step == 0 :
-                    torch.save({
-                        'net_G': self.G.state_dict(),
-                        'net_D': self.D.state_dict(),
-                        #'optim_G': optim_G.state_dict(),
-                        #'optim_D': optim_D.state_dict(),
-                        #'sched_G': sched_G.state_dict(),
-                        #'sched_D': sched_D.state_dict(),
-                    }, os.path.join(self.model_save_path, 'model.pt'))
-                    self.G.eval() #put in evaluation mode
-                    imgs = []
-                    size = 5000
-                    with torch.no_grad():
-                        for start in trange(0, size, self.batch_size, desc='Evaluating', ncols=0, leave=False):
-                            end = min(start + self.batch_size, size)
-                            z = tensor2var(torch.randn(self.imsize, self.z_dim))  # generating random noise
-                            imgs.append(self.G(z)[0]) #.cpu())
-                    self.G.train()
-                    imgs = torch.cat(imgs, dim=0)
-                    imgs = (imgs + 1) / 2
-                    IS, FID = get_inception_score_and_fid(imgs, self.fid_cache, verbose = True)
-                    status_string = "Step %s/%s Inception Score: %.3f(%.5f), FID: %6.3f" %(step, self.total_step, IS[0], IS[1], FID)
-                    print(status_string)
-                    self.score_logger.info(status_string)
+                torch.save({
+                    'net_G': self.G.state_dict(),
+                    'net_D': self.D.state_dict(),
+                    # 'optim_G': optim_G.state_dict(),
+                    # 'optim_D': optim_D.state_dict(),
+                    # 'sched_G': sched_G.state_dict(),
+                    # 'sched_D': sched_D.state_dict(),
+                }, os.path.join(self.model_save_path, 'model.pt'))
+                self.G.eval()  # put in evaluation mode
+                imgs = []
+                size = 5000
+                with torch.no_grad():
+                    for start in trange(0, size, self.batch_size, desc='Evaluating', ncols=0, leave=False):
+                        end = min(start + self.batch_size, size)
+                        z = tensor2var(torch.randn(self.imsize, self.z_dim))  # generating random noise
+                        imgs.append(self.G(z)[0])  # .cpu())
+                self.G.train()
+                imgs = torch.cat(imgs, dim=0)
+                imgs = (imgs + 1) / 2
+                IS, FID = get_inception_score_and_fid(imgs, self.fid_cache, verbose=True)
+                status_string = "Step %s/%s Inception Score: %.3f(%.5f), FID: %6.3f" % (
+                step, self.total_step, IS[0], IS[1], FID)
+                print(status_string)
+                self.score_logger.info(status_string)
+                elapsed = time.time() - start_time
+                elapsed = str(datetime.timedelta(seconds=elapsed))
+                time_fid_end = "FID END: Elapsed [{}], Step [{}/{}]".format(elapsed, step + 1, self.total_step)
+                time_fid = (time_fid_start + '\n' + time_fid_end)
+                self.info_logger.info(time_fid)
 
-
+            if self.backup_freq > 0 and int((step + 1) % (self.backup_freq / self.batch_multiplier)) == 0:
+                self.backup(step)
 
     def _data_gen(self):
         """ Data iterator, simple method which makes image data iterable --> This will iterate on endlessly
@@ -227,9 +240,10 @@ class Trainer(object):
         self.D.train()
         self.G.train()
         real_images = tensor2var(next(self.data_gen))
+        self.batches_seen += 1
 
         if not self.srfb:
-            self._extra_sync_nets() #this sets the extragradient nets' learnable parameters to the same values as the normal ones. We don't want that here.
+            self._extra_sync_nets()  # this sets the extragradient nets' learnable parameters to the same values as the normal ones. We don't want that here.
 
         if self.extra:
             # ================== Train D @ t + 1/2 ================== #
@@ -249,7 +263,7 @@ class Trainer(object):
         d_loss_real = self._backprop_disc(G=self.G_extra, D=self.D, real_images=real_images,
                                           d_optim=self.d_optimizer, svrg=self.svrg,
                                           scheduler_d=self.scheduler_d if _lr_scheduler else None)
-        #sure it's funky that this call starts with G,D while the backprop_disc above starts with D,G; but in Python that doesn't matter.
+        # sure it's funky that this call starts with G,D while the backprop_disc above starts with D,G; but in Python that doesn't matter.
 
         # ================== Train G and gumbel @ t + 1 ================== #
         self._backprop_gen(G=self.G, D=self.D_extra, bsize=real_images.size(0),
@@ -261,17 +275,17 @@ class Trainer(object):
         self._update_ema_gen()
         return d_loss_real
 
-    def _normalize_acc_grads(self, net): #normalizes the accumulated gradients
+    def _normalize_acc_grads(self, net):  # normalizes the accumulated gradients
         """Divides accumulated gradients with len(self.data_loader)"""
         for _param in filter(lambda p: p.requires_grad, net.parameters()):
             _param.grad.data.div_(len(self.data_loader))
 
     def update_svrg_stats(self):
-        self.mu_g, self.mu_d = [], [] #mu is the full batch gradient, for the Generator and Discriminator respectively
+        self.mu_g, self.mu_d = [], []  # mu is the full batch gradient, for the Generator and Discriminator respectively
 
         # Update mu_d  ####################
-        self.d_optimizer.zero_grad() #this zeros the weights and biases, d_optimizer is a torch function
-        for _, _data in enumerate(self.data_loader): #we go over the batches of the data 781 ~ 50,000 / 64
+        self.d_optimizer.zero_grad()  # this zeros the weights and biases, d_optimizer is a torch function
+        for _, _data in enumerate(self.data_loader):  # we go over the batches of the data 781 ~ 50,000 / 64
             real_images = tensor2var(_data[0])
             self._backprop_disc(self.G, self.D, real_images, d_optim=None, svrg=False)
         self._normalize_acc_grads(self.D)
@@ -326,36 +340,37 @@ class Trainer(object):
         :param svrg:
         :return:
         """
-        d_out_real = D(real_images) #put some real images in, d_out_real = predictions after forward pass
+        d_out_real = D(real_images)  # put some real images in, d_out_real = predictions after forward pass
         if self.adv_loss == 'wgan-gp':
             d_loss_real = - torch.mean(d_out_real)
         elif self.adv_loss == 'hinge':
-            d_loss_real = torch.nn.ReLU()(1.0 - d_out_real[0]).mean() #changed d_out_real to d_out_real[0], the prediction for the
+            d_loss_real = torch.nn.ReLU()(
+                1.0 - d_out_real[0]).mean()  # changed d_out_real to d_out_real[0], the prediction for the
         else:
             raise NotImplementedError
 
-        z = tensor2var(torch.randn(real_images.size(0), self.z_dim)) #generating random noise
-        fake_images = G(z) #feed this random noise into G
-        d_out_fake = D(fake_images[0]) #prediction fake
+        z = tensor2var(torch.randn(real_images.size(0), self.z_dim))  # generating random noise
+        fake_images = G(z)  # feed this random noise into G
+        d_out_fake = D(fake_images[0])  # prediction fake
 
         if self.adv_loss == 'wgan-gp':
             d_loss_fake = d_out_fake.mean()
         elif self.adv_loss == 'hinge':
-            d_loss_fake = torch.nn.ReLU()(1.0 + d_out_fake[0]).mean() #notice the 1+ here, also, d_out_fake set to d_out_fake[0]
+            d_loss_fake = torch.nn.ReLU()(
+                1.0 + d_out_fake[0]).mean()  # notice the 1+ here, also, d_out_fake set to d_out_fake[0]
         else:
             raise NotImplementedError
 
-
         # If using SRFB: # Calculate the values for the discriminatorBar
         # update the weights and biases for each layer in the network.
-        #if self.srfb:
+        # if self.srfb:
         #    for name, param in D.parameters(): #self.D_extra.named_parameters():
         #        if 'weight' or 'bias' in name:
         #            #param.data = ( (1 - self.delta) * param.data ) + ( self.delta * param.data )
         #            param.data = ( (1 - self.delta) * self.D.state_dict()[name] ) + ( self.delta * param.data )
 
         # Backward + Optimize
-        d_loss = (d_loss_real + d_loss_fake) / self.batch_multiplier #add the losses up for the discriminator
+        d_loss = (d_loss_real + d_loss_fake) / self.batch_multiplier  # add the losses up for the discriminator
         self.d_loss_info = d_loss
         d_loss.backward()
         if d_optim is not None:
@@ -363,7 +378,7 @@ class Trainer(object):
                 d_out_real = self.d_snapshot(real_images)
                 d_out_fake = self.d_snapshot(self.g_snapshot(z)[0])
                 if self.adv_loss == 'wgan-gp':
-                    d_s_loss_real = - torch.mean(d_out_real) #these are left unchanged. Use d_out_real[0] here
+                    d_s_loss_real = - torch.mean(d_out_real)  # these are left unchanged. Use d_out_real[0] here
                     d_loss_fake = d_out_fake.mean()
                 elif self.adv_loss == 'hinge':
                     d_s_loss_real = torch.nn.ReLU()(1.0 - d_out_real[0]).mean()
@@ -378,26 +393,26 @@ class Trainer(object):
                 self._update_grads_svrg(list(filter(lambda p: p.requires_grad, D.parameters())),
                                         list(filter(lambda p: p.requires_grad, self.d_snapshot.parameters())),
                                         self.mu_d)
-                #d_optim.step()
-                #d_optim.zero_grad()  # zeros the weights and biases
+                # d_optim.step()
+                # d_optim.zero_grad()  # zeros the weights and biases
             if self.batch_multiplier - self.batch_counter == 0:
                 if self.srfb:
-                    D_par_iter = iter(self.D.parameters())#1
+                    D_par_iter = iter(self.D.parameters())  # 1
                     with torch.no_grad():
                         for p in self.D_extra.parameters():
-                            new_value = (1-self.delta) * p + self.delta * D_par_iter.__next__()
+                            new_value = (1 - self.delta) * p + self.delta * D_par_iter.__next__()
                             p.copy_(new_value)
-                            #Really important that this update step happens here. Put it higher and it won't work.
-                    self.D.load_state_dict(self.D_extra.state_dict())#2
+                            # Really important that this update step happens here. Put it higher and it won't work.
+                    self.D.load_state_dict(self.D_extra.state_dict())  # 2
 
-                d_optim.step()#3
+                d_optim.step()  # 3
                 d_optim.zero_grad()
 
                 if scheduler_d is not None:
                     scheduler_d.step()
 
         if self.adv_loss == 'wgan-gp':  # Todo: add SVRG for wgan-gp
-            #note by Paul - I have not modified any of this, still the same as source.
+            # note by Paul - I have not modified any of this, still the same as source.
             raise NotImplementedError('SVRG-WGAN-gp is not implemented yet')
             # Compute gradient penalty
             alpha = torch.rand(real_images.size(0), 1, 1, 1).cuda().expand_as(real_images)
@@ -423,7 +438,7 @@ class Trainer(object):
             d_loss.backward()
             if d_optim is not None:
                 self.d_optimizer.step()
-        return d_loss_real.data.item() #cost of the loss function, specific for the real images
+        return d_loss_real.data.item()  # cost of the loss function, specific for the real images
 
     def _backprop_gen(self, G, D, bsize, g_optim=True, svrg=False, scheduler_g=None):
         """Updates G (Vs. D).
@@ -459,9 +474,9 @@ class Trainer(object):
                     G_par_iter = iter(self.G.parameters())
                     with torch.no_grad():
                         for p in self.G_extra.parameters():
-                            new_value = (1-self.delta) * p + self.delta * G_par_iter.__next__()
+                            new_value = (1 - self.delta) * p + self.delta * G_par_iter.__next__()
                             p.copy_(new_value)
-                            #Really important that this update step happens here. Put it higher and it won't work.
+                            # Really important that this update step happens here. Put it higher and it won't work.
                     self.G.load_state_dict(self.G_extra.state_dict())
 
                 g_optim.step()
@@ -473,7 +488,7 @@ class Trainer(object):
     def build_model(self):
         # Models                    ###################################################################
         self.G = Generator(self.batch_size, self.imsize, self.z_dim, self.g_conv_dim).cuda()
-        self.D = Discriminator(self.batch_size, self.imsize, self.d_conv_dim).cuda() #init discriminator
+        self.D = Discriminator(self.batch_size, self.imsize, self.d_conv_dim).cuda()  # init discriminator
         # Todo: do not allocate unnecessary GPU mem for G_extra and D_extra if self.extra == False (and self.srfb == False)
         self.G_extra = Generator(self.batch_size, self.imsize, self.z_dim, self.g_conv_dim).cuda()
         self.D_extra = Discriminator(self.batch_size, self.imsize, self.d_conv_dim).cuda()
@@ -541,10 +556,10 @@ class Trainer(object):
             self.d_optimizer = torch.optim.SvrgAdam(filter(lambda p: p.requires_grad, self.D.parameters()),
                                                     self.d_lr, [self.d_beta1, self.beta2])
             self.g_optimizer_extra = torch.optim.SvrgAdam(filter(lambda p: p.requires_grad,
-                                                          self.G_extra.parameters()),
+                                                                 self.G_extra.parameters()),
                                                           self.g_lr, [self.g_beta1, self.beta2])
             self.d_optimizer_extra = torch.optim.SvrgAdam(filter(lambda p: p.requires_grad,
-                                                          self.D_extra.parameters()),
+                                                                 self.D_extra.parameters()),
                                                           self.d_lr, [self.d_beta1, self.beta2])
         else:
             raise NotImplementedError('Supported optimizers: SGD, Adam, Adadelta')
@@ -559,8 +574,8 @@ class Trainer(object):
             self.scheduler_d_extra = torch.optim.lr_scheduler.ExponentialLR(self.d_optimizer_extra,
                                                                             gamma=self.lr_scheduler)
 
-        #print('the Generator, initially: \n' + self.G)
-        #print('the Discriminator, initially: \n' + self.D)
+        # print('the Generator, initially: \n' + self.G)
+        # print('the Discriminator, initially: \n' + self.D)
 
     def _extra_sync_nets(self):
         """ Helper function. Copies the current parameters to the t+1/2 parameters,
@@ -675,7 +690,7 @@ class Trainer(object):
 
         for i in range(len(l_param)):
             l_avg_param[i].data.copy_(l_avg_param[i].data.mul(n_gen_update).div(n_gen_update + 1.).add(
-                                      l_param[i].data.div(n_gen_update + 1.)))
+                l_param[i].data.div(n_gen_update + 1.)))
 
     def _update_ema_gen(self, beta_ema=0.9999):
         """ Updates the exponential moving average generator. """
@@ -686,5 +701,5 @@ class Trainer(object):
 
         for i in range(len(l_param)):
             l_ema_param[i].data.copy_(l_ema_param[i].data.mul(beta_ema).add(
-                l_param[i].data.mul(1-beta_ema)))
+                l_param[i].data.mul(1 - beta_ema)))
 
