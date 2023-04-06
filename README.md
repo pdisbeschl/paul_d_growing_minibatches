@@ -1,13 +1,21 @@
 # paul_d_growing_minibatches
-Code for growing mini-batches
+Code for growing mini-batches, see the PDF of my thesis in the GitHub folder.
 
-Using Windows? - uncomment lines 21 and 22 
+
+Main code references: 
+
+Based in part on code from https://github.com/Chavdarova/SVRE/tree/master/svre --> See Tatjana Chavdarova et al. “Reducing Noise in GAN Training with Variance Reduced Extragradient”. In: Advances in Neural Information Processing Systems. Ed. by H. Wallach et al. Vol. 32. Curran Associates, Inc., 2019. url: https://proceedings.neurips.cc/paper/2019/file/58a2fc6ed39fd083f55d4182bf88826d-Paper.pdf
+
+Based in part on Matlab code from Barbara Franci's paper: Barbara Franci and Sergio Grammatico. “A game–theoretic approach for Generative Adversarial Networks”. In: 2020 59th IEEE Conference on Decision and Control (CDC). 2020, pp. 1646–1651. doi: 10.1109/CDC42340.2020.9304183
+
+
+How to run: 
 
 Requirements: use pip to install pytorch_gan_metrics
 
-Based on code from https://github.com/Chavdarova/SVRE/tree/master/svre
+Trying to run it on Windows? - uncomment lines 21 and 22 from trainer.py
 
-How to run: 
+The, in the terminal, enter in the following command.
 
 main.py --total_step 262500 --dataset cifar10 --adv_loss hinge --sample_step 1000 --data_dir cifar-10-batches-py/ --avg_start -1 --lr_scheduler -1 --g_lr 0.0002 --d_lr 0.0002 --g_beta1 0.5 --d_beta1 0.5 --batch_size 64 --extra False --optim adam --srfb True --eval_step 5000 --batch_s_doubler 25000
 
